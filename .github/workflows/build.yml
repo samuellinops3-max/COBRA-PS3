@@ -3,16 +3,12 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: ps3dev/psl1ght:latest
     steps:
       - uses: actions/checkout@v4
       - name: Compilar
-        run: |
-          make
-          ls -lh
-      - name: Salvar PKG
+        run: make
+      - name: Salvar
         uses: actions/upload-artifact@v4
         with:
-          name: Slither-PS3-PKG
-          path: "*.pkg"
+          name: Slither-PS3
+          path: slither
