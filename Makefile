@@ -1,16 +1,13 @@
-TARGET		:= slither
-TITLE		:= Slither.io Offline
-APPID		:= SLIT00001
-CONTENTID	:= UP0001-SLIT00001_00-SLITHER0000000001
+CC = gcc
+CFLAGS = -Wall -O2
+TARGET = slither
 
-OBJS		:= main.o
+all: $(TARGET)
 
-include $(PSL1GHT)/ppu_rules
-
-all: $(TARGET).elf $(TARGET).self $(TARGET).pkg
-
-$(TARGET).elf: $(OBJS)
-	$(LD) $(OBJS) -o $@ $(LDFLAGS)
+$(TARGET): main.c
+	$(CC) $(CFLAGS) main.c -o $(TARGET)
 
 clean:
-	rm -f $(OBJS) $(TARGET).elf $(TARGET).self $(TARGET).pkg
+	rm -f $(TARGET)
+
+.PHONY: all clean
