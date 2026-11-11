@@ -3,24 +3,22 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/ps3dev/psl1ght:latest
     steps:
       - uses: actions/checkout@v4
-      - name: Criar icone
+      - name: Build com Docker direto
         run: |
-          python3 -c "from PIL import Image; Image.new('RGB',(320,176),(0,200,0)).save('ICON0.PNG')"
-      - name: Compilar
-        run: |
-          make clean
-          make
-          ls -lh
-          make pkg
-          ls -lh *.pkg
+          docker run --rm -v ${{ github.workspace }}:/src -w /src ghcr.io/ps3dev/psl1ght:latest bash -c "
+            python3 -c \"from PIL import Image; Image.new('RGB',(320,176),(0,200,0)).save('ICON0.PNG')\"
+            make clean
+            make
+            ls -lh
+            make pkg
+            ls -lh *.pkg
+          "
       - name: Criar Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3
+          tag_name: v1.5
           name: Slither PS3
           files: "*.pkg"
         env:
