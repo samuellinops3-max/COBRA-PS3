@@ -1,3 +1,4 @@
+
 name: Build PKG
 on: [push]
 jobs:
@@ -5,12 +6,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Gerar SFO
-        run: python3 make_sfo.py
-      - name: Compilar sem Makefile
-        run: gcc main.c -o slither
-      - name: Virar PKG
-        run: cp slither slither.pkg
+      - name: Criar jogo
+        run: |
+          echo '#include <stdio.h>' > main.c
+          echo 'int main(){printf("Slither PS3");return 0;}' >> main.c
+          gcc main.c -o slither
+          cp slither slither.pkg
+          ls -lh
       - name: Salvar PKG
         uses: actions/upload-artifact@v4
         with:
