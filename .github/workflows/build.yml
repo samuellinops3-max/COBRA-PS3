@@ -1,20 +1,30 @@
-
-name: Build PKG
+name: Build PS3 PKG
 on: [push]
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: ps3dev/psl1ght:latest
     steps:
       - uses: actions/checkout@v4
-      - name: Criar jogo
+      - name: Criar icone
         run: |
-          echo '#include <stdio.h>' > main.c
-          echo 'int main(){printf("Slither PS3");return 0;}' >> main.c
-          gcc main.c -o slither
-          cp slither slither.pkg
+          python3 -c "from PIL import Image; Image.new('RGB',(320,176),(0,200,0)).save('ICON0.PNG')"
+      - name: Compilar e ver tamanho
+        run: |
+          make clean
+          make
           ls -lh
-      - name: Salvar PKG
-        uses: actions/upload-artifact@v4
+          ls -lh slither.elf || ls -lh *.elf
+          echo "--- EBOOT ---"
+          ls -lh EBOOT.BIN || echo "SEM EBOOT, DEU ERRO AQUI"
+          make pkg
+          ls -lh *.pkg
+      - name: Criar Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: slither-pkg
-          path: slither.pkg
+          tag_name: v1.1
+          name: Slither PS3
+          files: "*.pkg"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
