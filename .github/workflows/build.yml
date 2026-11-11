@@ -4,26 +4,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: ps3dev/psl1ght:latest
+      image: ghcr.io/ps3dev/psl1ght:latest
     steps:
       - uses: actions/checkout@v4
       - name: Criar icone
         run: |
           python3 -c "from PIL import Image; Image.new('RGB',(320,176),(0,200,0)).save('ICON0.PNG')"
-      - name: Compilar e ver tamanho
+      - name: Compilar
         run: |
           make clean
           make
           ls -lh
-          ls -lh slither.elf || ls -lh *.elf
-          echo "--- EBOOT ---"
-          ls -lh EBOOT.BIN || echo "SEM EBOOT, DEU ERRO AQUI"
           make pkg
           ls -lh *.pkg
       - name: Criar Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1
+          tag_name: v1.3
           name: Slither PS3
           files: "*.pkg"
         env:
