@@ -5,10 +5,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Gerar SFO
+        run: python3 make_sfo.py
       - name: Compilar
         run: make
-      - name: Salvar
+      - name: Virar PKG
+        run: cp slither slither.pkg
+      - name: Salvar PKG
         uses: actions/upload-artifact@v4
         with:
-          name: Slither-PS3
-          path: slither
+          name: slither-pkg
+          path: slither.pkg
