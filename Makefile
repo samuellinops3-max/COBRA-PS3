@@ -6,5 +6,5 @@ SOURCES		:= .
 INCLUDES	:= .
 CFILES		:= $(foreach dir,$(SOURCES), $(wildcard $(dir)/*.c))
 OBJS		:= $(CFILES:.c=.o)
-LIBS		:= -ltiny3d -lrsx -lio -lsysutil -laudio -lm
+LIBS		:= -ltiny3d -lrsx -lio -lsysutil -lm
 include $(PSL1GHT)/ppu_rules
