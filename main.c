@@ -632,4 +632,502 @@ static void update_game(void)
     gz += (tz - gz) * 0.03f;
 }
 
-/* ---------
+/* ---------                                    /* ---------- controle ---------- */
+static float pad_ax = 0, pad_ay = 0, pad_mag = 0;
+static int bX = 0, bO = 0, bStart = 0, bUp = 0, bDown = 0, bLeft = 0, bRight = 0, pad_boost = 0;
+static int pad_ok = 0, pad_missing = 0;
+static int pX, pO, pS, pU, pD, pL, pR;
+static int eX, eO, eS, nav_h, nav_v;
+
+static void read_pad(void)
+{
+    padInfo info;
+    padData d;
+    int got = 0;
+    ioPadGetInfo(&info);
+    for (int p = 0; p < 7; p++) {
+        if (!info.status[p]) continue;
+        ioPadGetData(p, &d);
+        if (d.len == 0) { got = 2; break; }   /* sem dado novo: mantem o ultimo estado */
+        float ax = ((int)d.ANA_L_H - 128) / 128.0f, ay = ((int)d.ANA_L_V - 128) / 128.0f;
+        bLeft = d.BTN_LEFT; bRight = d.BTN_RIGHT; bUp = d.BTN_UP; bDown = d.BTN_DOWN;
+        if (bLeft) ax = -1;
+        if (bRight) ax = 1;
+        if (bUp) ay = -1;
+        if (bDown) ay = 1;
+        pad_ax = ax; pad_ay = ay;
+        pad_mag = sqrtf(ax * ax + ay * ay);
+        pad_boost = d.BTN_CROSS || d.BTN_R1 || d.BTN_R2;
+        bX = d.BTN_CROSS; bO = d.BTN_CIRCLE; bStart = d.BTN_START;
+        got = 1;
+        break;
+    }
+    if (got) {
+        pad_missing = 0;
+        pad_ok = 1;
+    } else if (++pad_missing > 30) {
+        pad_ok = 0;
+        pad_ax = pad_ay = pad_mag = 0;
+        pad_boost = bX = bO = bStart = bUp = bDown = bLeft = bRight = 0;
+    }
+
+    int u = bUp || pad_ay < -0.6f, dn = bDown || pad_ay > 0.6f;
+    int l = bLeft || pad_ax < -0.6f, r = bRight || pad_ax > 0.6f;
+    eX = bX && !pX; eO = bO && !pO; eS = bStart && !pS;
+    nav_h = (r && !pR) - (l && !pL);
+    nav_v = (dn && !pD) - (u && !pU);
+    pX = bX; pO = bO; pS = bStart; pU = u; pD = dn; pL = l; pR = r;
+}
+
+/* ---------- jogo ---------- */
+enum { ST_MENU, ST_PLAY };
+static int state = ST_MENU, skin = 0, nameidx = 0, dead_t = 0, play_t = 0, frame = 0;
+static Snake sn[NSN];
+static Pellet pel[NPEL];
+static int pelrot = 0;
+static float camx = WORLD / 2, camy = WORLD / 2, gz = 0.8f;
+
+static float frand(void) { return (float)rand() / (float)RAND_MAX; }
+
+static float radius_of(const Snake *s)
+{
+    int l = s->len > 240 ? 240 : s->len;
+    return 9.0f + l * 0.035f;
+}
+
+static void add_pellet(float x, float y, int size)
+{
+    for (int k = 0; k < NPEL; k++) {
+        int i = (pelrot + k) % NPEL;
+        if (!pel[i].active) {
+            pel[i].x = x; pel[i].y = y; pel[i].size = size; pel[i].active = 1;
+            pel[i].col = palette[rand() % 8];
+            pelrot = (i + 1) % NPEL;
+            return;
+        }
+    }
+}
+
+static int spot_is_clear(int self, float x, float y)
+{
+    for (int o = 0; o < NSN; o++) {
+        if (o == self || !sn[o].alive) continue;
+        for (int j = 0; j < sn[o].len; j += 4) {
+            float dx = sn[o].x[j] - x, dy = sn[o].y[j] - y;
+            if (dx * dx + dy * dy < 300.0f * 300.0f) return 0;
+        }
+    }
+    return 1;
+}
+
+static void spawn_snake(int i)
+{
+    Snake *s = &sn[i];
+    float x = WORLD / 2, y = WORLD / 2;
+    for (int t = 0; t < 12; t++) {
+        x = 400 + frand() * (WORLD - 800);
+        y = 400 + frand() * (WORLD - 800);
+        if (spot_is_clear(i, x, y)) break;
+    }
+    s->ang = frand() * 2 * PI;
+    s->tgt = s->ang;
+    s->len = 10;
+    for (int j = 0; j < s->len; j++) {
+        s->x[j] = x - cosf(s->ang) * SP * j;
+        s->y[j] = y - sinf(s->ang) * SP * j;
+    }
+    s->alive = 1; s->respawn = 0; s->boost = 0; s->grow = 0; s->tick = 0; s->score = 0;
+    if (i == 0) {
+        s->col = palette[skin];
+        s->name = player_names[nameidx];
+    } else {
+        int c = (skin + 1 + i) % 8;
+        if (c == skin) c = (c + 1) % 8;
+        s->col = palette[c];
+        s->name = bot_names[(i - 1) % 9];
+    }
+}
+
+static void kill_snake(int i, int silent)
+{
+    Snake *s = &sn[i];
+    if (!silent)
+        for (int j = 0; j < s->len; j += 2)
+            add_pellet(s->x[j] + (frand() - 0.5f) * 10, s->y[j] + (frand() - 0.5f) * 10, 2);
+    s->alive = 0;
+    s->respawn = 240;
+    if (i == 0 && !silent) {
+        dead_t = 0;
+        sfx(420.0f, 50.0f, 0.30f, 0.7f, 0);
+        sfx(300.0f, 300.0f, 0.20f, 0.35f, 1);
+    } else if (i != 0) {
+        sfx(160.0f, 60.0f, 0.10f, 0.18f, 1);
+    }
+}
+
+static void bot_think(int i)
+{
+    Snake *s = &sn[i];
+    float hx = s->x[0], hy = s->y[0];
+    s->tgt += (frand() - 0.5f) * 0.25f;
+
+    if (s->tick % 6 == 0) {
+        float best = 380.0f * 380.0f;
+        int bi = -1;
+        for (int k = 0; k < NPEL; k++) {
+            if (!pel[k].active) continue;
+            float dx = pel[k].x - hx, dy = pel[k].y - hy, d = dx * dx + dy * dy;
+            if (d < best) { best = d; bi = k; }
+        }
+        if (bi >= 0) s->tgt = atan2f(pel[bi].y - hy, pel[bi].x - hx);
+    }
+
+    if (hx < 250 || hx > WORLD - 250 || hy < 250 || hy > WORLD - 250)
+        s->tgt = atan2f(WORLD / 2 - hy, WORLD / 2 - hx);
+
+    float px = hx + cosf(s->ang) * 55, py = hy + sinf(s->ang) * 55;
+    float rs = radius_of(s);
+    for (int o = 0; o < NSN; o++) {
+        if (o == i || !sn[o].alive) continue;
+        float lim = rs + radius_of(&sn[o]) + 25;
+        lim *= lim;
+        for (int j = 0; j < sn[o].len; j += 2) {
+            float dx = sn[o].x[j] - px, dy = sn[o].y[j] - py;
+            if (dx * dx + dy * dy < lim) { s->tgt = s->ang + 1.6f; return; }
+        }
+    }
+}
+
+static void update_snake(int i)
+{
+    Snake *s = &sn[i];
+    if (!s->alive) {
+        if (i > 0 && --s->respawn <= 0) spawn_snake(i);
+        return;
+    }
+    s->tick++;
+    if (i == 0) {
+        if (pad_mag > 0.3f) s->tgt = atan2f(pad_ay, pad_ax);
+        s->boost = pad_boost;
+    } else {
+        bot_think(i);
+        s->boost = (s->len > 30 && (s->tick / 90) % 5 == 0) ? 1 : 0;
+    }
+
+    float d = s->tgt - s->ang;
+    while (d > PI) d -= 2 * PI;
+    while (d < -PI) d += 2 * PI;
+    if (d > 0.075f) d = 0.075f;
+    if (d < -0.075f) d = -0.075f;
+    s->ang += d;
+
+    float sp = 3.0f;
+    if (s->boost && s->len > 12) {
+        sp = 5.4f;
+        if (s->tick % 10 == 0) {
+            s->len--;
+            add_pellet(s->x[s->len], s->y[s->len], 1);
+        }
+    }
+    s->x[0] += cosf(s->ang) * sp;
+    s->y[0] += sinf(s->ang) * sp;
+    for (int j = 1; j < s->len; j++) {
+        float dx = s->x[j - 1] - s->x[j], dy = s->y[j - 1] - s->y[j];
+        float dd = sqrtf(dx * dx + dy * dy);
+        if (dd > SP) {
+            float f = (dd - SP) / dd;
+            s->x[j] += dx * f;
+            s->y[j] += dy * f;
+        }
+    }
+
+    if (s->x[0] < 0 || s->x[0] > WORLD || s->y[0] < 0 || s->y[0] > WORLD) { kill_snake(i, 0); return; }
+
+    float rs = radius_of(s), er = rs + 12;
+    for (int k = 0; k < NPEL; k++) {
+        if (!pel[k].active) continue;
+        float dx = pel[k].x - s->x[0], dy = pel[k].y - s->y[0];
+        if (dx * dx + dy * dy < er * er) {
+            pel[k].active = 0;
+            if (i == 0) sfx(650.0f, 1100.0f, 0.16f, 0.07f, 0);
+            s->grow += pel[k].size;
+            s->score += pel[k].size * 5;
+        }
+    }
+    while (s->grow >= 2 && s->len < MAXSEG) {
+        s->x[s->len] = s->x[s->len - 1];
+        s->y[s->len] = s->y[s->len - 1];
+        s->len++;
+        s->grow -= 2;
+    }
+    if (s->len >= MAXSEG) s->grow = 0;
+
+    for (int o = 0; o < NSN; o++) {
+        if (o == i || !sn[o].alive) continue;
+        float lim = (rs + radius_of(&sn[o])) * 0.75f;
+        lim *= lim;
+        for (int j = 0; j < sn[o].len; j++) {
+            float dx = sn[o].x[j] - s->x[0], dy = sn[o].y[j] - s->y[0];
+            if (dx * dx + dy * dy < lim) { kill_snake(i, 0); return; }
+        }
+    }
+}
+
+static void init_game(void)
+{
+    memset(pel, 0, sizeof(pel));
+    for (int k = 0; k < NPEL; k++) add_pellet(frand() * WORLD, frand() * WORLD, 1 + (rand() % 5 == 0));
+    for (int i = 1; i < NSN; i++) spawn_snake(i);
+    sn[0].alive = 0;
+}
+
+static void start_game(void)
+{
+    spawn_snake(0);
+    state = ST_PLAY;
+    play_t = 0;
+    dead_t = 0;
+    camx = sn[0].x[0];
+    camy = sn[0].y[0];
+    sfx(300.0f, 900.0f, 0.20f, 0.25f, 0);
+}
+
+static void update_game(void)
+{
+    frame++;
+    for (int i = 0; i < NSN; i++) update_snake(i);
+
+    int count = 0;
+    for (int k = 0; k < NPEL; k++) count += pel[k].active;
+    for (int n = 0; n < 2 && count < NPEL - 40; n++, count++)
+        add_pellet(frand() * WORLD, frand() * WORLD, 1 + (rand() % 5 == 0));
+
+    float tx = camx, ty = camy, tz = 0.8f;
+    if (state == ST_MENU) {
+        for (int i = 1; i < NSN; i++)
+            if (sn[i].alive) { tx = sn[i].x[0]; ty = sn[i].y[0]; break; }
+        if (nav_v) { nameidx = (nameidx + nav_v + 5) % 5; sfx(500.0f, 600.0f, 0.12f, 0.05f, 0); }
+        if (nav_h) { skin = (skin + nav_h + 8) % 8; sfx(700.0f, 800.0f, 0.12f, 0.05f, 0); }
+        if (eX) start_game();
+    } else {
+        play_t++;
+        if (sn[0].alive) {
+            tx = sn[0].x[0];
+            ty = sn[0].y[0];
+            int l = sn[0].len > 300 ? 300 : sn[0].len;
+            tz = 1.0f - 0.4f * l / 300.0f;
+            if (eS) { kill_snake(0, 1); state = ST_MENU; }
+        } else {
+            dead_t++;
+            if (dead_t > 45) {
+                if (eX) start_game();
+                else if (eO) state = ST_MENU;
+            }
+        }
+    }
+    camx += (tx - camx) * 0.25f;
+    camy += (ty - camy) * 0.25f;
+    gz += (tz - gz) * 0.03f;
+}
+
+/* ---------- render ---------- */
+static void draw_snake(const Snake *s, float z, float hw, float hh)
+{
+    int r = (int)(radius_of(s) * z);
+    if (r < 3) r = 3;
+    int ow = z > 0.6f ? 2 : 1;
+    u32 base = s->col, alt = shade(s->col, 78), edge = shade(s->col, 40);
+    for (int j = s->len - 1; j >= 1; j -= 2) {
+        int px = (int)((s->x[j] - camx) * z + hw), py = (int)((s->y[j] - camy) * z + hh);
+        circle(px, py, r + ow, edge);
+        circle(px, py, r, (j % 12 < 6) ? base : alt);
+    }
+    int hx = (int)((s->x[0] - camx) * z + hw), hy = (int)((s->y[0] - camy) * z + hh);
+    int hr = r + r / 8;
+    circle(hx, hy, hr + ow, edge);
+    circle(hx, hy, hr, base);
+    for (int e = -1; e <= 1; e += 2) {
+        int ex = hx + (int)(cosf(s->ang + e * 0.7f) * hr * 0.6f);
+        int ey = hy + (int)(sinf(s->ang + e * 0.7f) * hr * 0.6f);
+        circle(ex, ey, hr * 35 / 100 + 1, 0x00FFFFFF);
+        circle(ex + (int)(cosf(s->ang) * hr * 0.15f), ey + (int)(sinf(s->ang) * hr * 0.15f), hr * 18 / 100 + 1, 0x00000000);
+    }
+}
+
+static void render_world(float sc)
+{
+    float z = sc * gz;
+    float hw = W / 2.0f, hh = H / 2.0f;
+    u32 n = W * H;
+    for (u32 i = 0; i < n; i++) back[i] = 0x000E1420;
+
+    int sx0 = (int)((0 - camx) * z + hw), sx1 = (int)((WORLD - camx) * z + hw);
+    int sy0 = (int)((0 - camy) * z + hh), sy1 = (int)((WORLD - camy) * z + hh);
+    u32 red = 0x00380E12;
+    if (sx0 > 0) fill_rect(0, 0, sx0, H, red);
+    if (sx1 < (int)W) fill_rect(sx1, 0, W - sx1, H, red);
+    if (sy0 > 0) fill_rect(0, 0, W, sy0, red);
+    if (sy1 < (int)H) fill_rect(0, sy1, W, H - sy1, red);
+
+    float gx0 = floorf((camx - hw / z) / 100.0f) * 100.0f;
+    float gy0 = floorf((camy - hh / z) / 100.0f) * 100.0f;
+    int gs = (int)(5 * z + 1);
+    for (float gx = gx0; gx < camx + hw / z; gx += 100.0f) {
+        if (gx < 0 || gx > WORLD) continue;
+        for (float gy = gy0; gy < camy + hh / z; gy += 100.0f) {
+            if (gy < 0 || gy > WORLD) continue;
+            fill_rect((int)((gx - camx) * z + hw), (int)((gy - camy) * z + hh), gs, gs, 0x00263A56);
+        }
+    }
+
+    for (int k = 0; k < NPEL; k++) {
+        if (!pel[k].active) continue;
+        int px = (int)((pel[k].x - camx) * z + hw), py = (int)((pel[k].y - camy) * z + hh);
+        if (px < -20 || py < -20 || px > (int)W + 20 || py > (int)H + 20) continue;
+        float pulse = sinf((frame + k * 7) * 0.12f) * 1.2f;
+        int r = (int)((3 + pel[k].size * 2 + pulse) * z);
+        circle(px, py, r + (int)(3 * z + 1), shade(pel[k].col, 30));
+        circle(px, py, r, pel[k].col);
+    }
+
+    for (int i = NSN - 1; i >= 0; i--) {
+        const Snake *s = &sn[i];
+        if (!s->alive) continue;
+        draw_snake(s, z, hw, hh);
+        int hx = (int)((s->x[0] - camx) * z + hw), hy = (int)((s->y[0] - camy) * z + hh);
+        if (hx > 40 && hx < (int)W - 40 && hy > 40 && hy < (int)H - 20) {
+            int r = (int)(radius_of(s) * z);
+            draw_center(s->name, hx, hy - r - 34, 3, i == 0 ? 0x00FFD23F : 0x00FFFFFF);
+        }
+    }
+}
+
+static void render_minimap(float sc, int M)
+{
+    int sz = (int)(150 * sc), x0 = (int)W - M - sz, y0 = (int)H - M - sz;
+    fill_rect(x0 - 3, y0 - 3, sz + 6, sz + 6, 0x00FFFFFF);
+    fill_rect(x0, y0, sz, sz, 0x000A1020);
+    for (int i = NSN - 1; i >= 0; i--) {
+        if (!sn[i].alive) continue;
+        int mx = x0 + (int)(sn[i].x[0] / WORLD * sz), my = y0 + (int)(sn[i].y[0] / WORLD * sz);
+        int d = i == 0 ? 5 : 3;
+        fill_rect(mx - d / 2, my - d / 2, d, d, i == 0 ? 0x00FFFFFF : sn[i].col);
+    }
+}
+
+static void render_leaderboard(float sc, int M)
+{
+    int idx[NSN], n = 0;
+    for (int i = 0; i < NSN; i++) if (sn[i].alive) idx[n++] = i;
+    for (int a = 0; a < n; a++)
+        for (int b = a + 1; b < n; b++)
+            if (sn[idx[b]].score > sn[idx[a]].score) { int t = idx[a]; idx[a] = idx[b]; idx[b] = t; }
+    int x0 = (int)W - M - (int)(250 * sc), y = M / 2;
+    draw_text("PLACAR", x0, y, 4, 0x00FFD23F);
+    y += 34;
+    for (int k = 0; k < n && k < 5; k++) {
+        char line[40];
+        sprintf(line, "%d %s", k + 1, sn[idx[k]].name);
+        u32 c = idx[k] == 0 ? 0x00FFD23F : 0x00FFFFFF;
+        draw_text(line, x0, y, 3, c);
+        sprintf(line, "%d", sn[idx[k]].score);
+        draw_text(line, x0 + (int)(250 * sc) - text_width(line, 3), y, 3, c);
+        y += 26;
+    }
+}
+
+static void render_menu(float sc)
+{
+    int cx = (int)W / 2;
+    int u = (int)(sc + 0.5f); if (u < 1) u = 1;
+    draw_center("COBRA ARENA", cx, (int)(50 * sc), (int)(12 * sc), 0x00FFD23F);
+
+    int pw = (int)(580 * sc), ph = (int)(330 * sc), px = cx - pw / 2, py = (int)(170 * sc);
+    fill_rect(px - 6, py - 6, pw + 12, ph + 12, 0x00FFFFFF);
+    fill_rect(px, py, pw, ph, 0x0010182A);
+
+    draw_center("NOME  CIMA BAIXO", cx, py + (int)(22 * sc), 4 * u, 0x00B8C7E0);
+    draw_center(player_names[nameidx], cx, py + (int)(60 * sc), 7 * u, 0x00FFFFFF);
+
+    draw_center("COR  ESQ DIR", cx, py + (int)(128 * sc), 4 * u, 0x00B8C7E0);
+    int sy = py + (int)(205 * sc);
+    draw_text("<", px + (int)(30 * sc), sy - 15 * u, 6 * u, 0x00FFD23F);
+    draw_text(">", px + pw - (int)(30 * sc) - 18 * u, sy - 15 * u, 6 * u, 0x00FFD23F);
+    for (int i = 9; i >= 0; i--) {
+        int sx = cx - (int)(100 * sc) + i * (int)(22 * sc);
+        int yy = sy + (int)(sinf(frame * 0.1f + i * 0.6f) * 10 * sc);
+        circle(sx, yy, (int)(15 * sc) + 2, shade(palette[skin], 40));
+        circle(sx, yy, (int)(15 * sc), (i % 4 < 2) ? palette[skin] : shade(palette[skin], 78));
+        if (i == 0) {
+            circle(sx + (int)(5 * sc), yy - (int)(5 * sc), (int)(5 * sc), 0x00FFFFFF);
+            circle(sx + (int)(7 * sc), yy - (int)(5 * sc), (int)(2.5f * sc) + 1, 0x00000000);
+        }
+    }
+
+    int bw = (int)(340 * sc), bh = (int)(64 * sc), bx = cx - bw / 2, by = py + ph - bh - (int)(26 * sc);
+    fill_rect(bx - 4, by - 4, bw + 8, bh + 8, 0x00FFFFFF);
+    fill_rect(bx, by, bw, bh, ((frame / 20) % 2) ? 0x0030B050 : 0x0040D060);
+    draw_center("X JOGAR", cx, by + (bh - 30 * u) / 2, 6 * u, 0x00FFFFFF);
+
+    draw_center("ANALOGICO MOVE  X TURBO  START MENU", cx, (int)H - 60, 3, 0x00B8C7E0);
+}
+
+static void render_hud(float sc, int M)
+{
+    char buf[40];
+    draw_text("PONTOS", M, M / 2, 5, 0x00FFFFFF);
+    sprintf(buf, "%d", sn[0].score);
+    draw_text(buf, M, M / 2 + 40, 9, 0x00FFD23F);
+    if (play_t < 420)
+        draw_text("X TURBO   START MENU", M, (int)H - M - 20, 4, 0x00B8C7E0);
+    render_leaderboard(sc, M);
+    render_minimap(sc, M);
+
+    if (!sn[0].alive) {
+        int cx = (int)W / 2, cy = (int)H / 2;
+        int bw = (int)(620 * sc), bh = (int)(300 * sc);
+        fill_rect(cx - bw / 2 - 6, cy - bh / 2 - 6, bw + 12, bh + 12, 0x00FFFFFF);
+        fill_rect(cx - bw / 2, cy - bh / 2, bw, bh, 0x00180A10);
+        draw_center("FIM DE JOGO", cx, cy - bh / 2 + (int)(26 * sc), 9, 0x00FF4D4D);
+        sprintf(buf, "PONTOS %d", sn[0].score);
+        draw_center(buf, cx, cy - (int)(20 * sc), 6, 0x00FFD23F);
+        if (dead_t > 45) {
+            draw_center("X JOGAR DE NOVO", cx, cy + (int)(50 * sc), 5, 0x00FFFFFF);
+            draw_center("O MENU", cx, cy + (int)(100 * sc), 5, 0x00B8C7E0);
+        }
+    }
+}
+
+static void render(void)
+{
+    float sc = (float)W / 1280.0f;
+    int M = (int)(W * 0.05f);
+    render_world(sc);
+    if (state == ST_MENU) render_menu(sc);
+    else render_hud(sc, M);
+    if (!pad_ok) draw_center("SEM CONTROLE", (int)W / 2, M / 2, 5, 0x00FF4D4D);
+}
+
+int main(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    init_screen();
+    init_font();
+    ioPadInit(7);
+    init_audio();
+    sysUtilRegisterCallback(0, sysutil_cb, NULL);
+    srand(20261109);
+    init_game();
+
+    while (running) {
+        sysUtilCheckCallback();
+        read_pad();
+        update_game();
+        snd_boost = (state == ST_PLAY && sn[0].alive && pad_boost && sn[0].len > 12);
+        audio_update();
+        render();
+        present();
+    }
+    quit_audio();
+    return 0;
+}
